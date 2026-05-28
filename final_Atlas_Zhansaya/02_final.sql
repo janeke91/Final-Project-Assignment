@@ -1,13 +1,4 @@
 -- =============================================================
---  FINAL PROJECT: Fitness Club Database
---  Database : fitness_club
---  Schema   : fitness_club_db
---  Author   : (your name)
---  Run      : psql -U postgres -d fitness_club -f 02_final.sql
--- =============================================================
-
-
--- =============================================================
 --  PART 1: DATABASE + SCHEMA SETUP
 -- =============================================================
 
