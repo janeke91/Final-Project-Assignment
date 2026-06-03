@@ -2,13 +2,8 @@
 --  PART 1: DATABASE + SCHEMA SETUP
 -- =============================================================
 
--- create the database manually before running this script:
---   CREATE DATABASE fitness_club;
-
-
 create schema if not exists fitness_club_db;
 set search_path to fitness_club_db;
-
 
 -- =============================================================
 --  PART 2: CREATE — DROP (correct FK dependency order)
