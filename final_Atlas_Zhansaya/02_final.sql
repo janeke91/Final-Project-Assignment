@@ -6,20 +6,6 @@ create schema if not exists fitness_club_db;
 set search_path to fitness_club_db;
 
 -- =============================================================
---  PART 2: CREATE — DROP (correct FK dependency order)
--- =============================================================
-
-drop table if exists fitness_club_db.payments            cascade;
-drop table if exists fitness_club_db.schedule_enrollment cascade;
-drop table if exists fitness_club_db.schedule            cascade;
-drop table if exists fitness_club_db.facilities          cascade;
-drop table if exists fitness_club_db.classes             cascade;
-drop table if exists fitness_club_db.instructors         cascade;
-drop table if exists fitness_club_db.members             cascade;
-drop table if exists fitness_club_db.membership_types    cascade;
-
-
--- =============================================================
 --  PART 2: CREATE — TABLE DEFINITIONS + CONSTRAINTS
 -- =============================================================
 
