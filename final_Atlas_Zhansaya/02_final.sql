@@ -5,19 +5,6 @@
 create schema if not exists fitness_club_db;
 set search_path to fitness_club_db;
 
--- =============================================================
---  PART 2: CREATE — DROP (correct FK dependency order)
--- =============================================================
-
-drop table if exists fitness_club_db.payments            cascade;
-drop table if exists fitness_club_db.schedule_enrollment cascade;
-drop table if exists fitness_club_db.schedule            cascade;
-drop table if exists fitness_club_db.facilities          cascade;
-drop table if exists fitness_club_db.classes             cascade;
-drop table if exists fitness_club_db.instructors         cascade;
-drop table if exists fitness_club_db.members             cascade;
-drop table if exists fitness_club_db.membership_types    cascade;
-
 
 -- =============================================================
 --  PART 2: CREATE — TABLE DEFINITIONS + CONSTRAINTS
@@ -28,8 +15,8 @@ create table if not exists membership_types (
     name                varchar(50)     not null unique,                          -- UNIQUE natural key
     duration_months     int             not null check (duration_months > 0),     -- CHECK: positive duration
     price               numeric(10,2)   not null check (price >= 0),              -- CHECK: non-negative money
-    access_level        varchar(50)     not null check (access_level in ('VIP', 'Standard', 'Basic')),  -- CHECK: enum
-    is_active           boolean         not null default true,                    -- DEFAULT: new plans are active
+    access_level        varchar(50)     not null check (access_level in ('VIP', 'Standard', 'Basic')),  -- CHECK: enum filter
+    is_active           boolean         not null default true,                    -- DEFAULT: new plans are active by default
     record_ts           date            not null default current_date
 );
 
@@ -38,11 +25,11 @@ create table if not exists members (
     first_name          varchar(50)     not null,
     last_name           varchar(50)     not null,
     email               varchar(100)    not null unique,                          -- UNIQUE natural key
-    phone               varchar(20)     not null,                                 -- NOT NULL on non-obvious column
+    phone               varchar(20)     not null,                                 -- NOT NULL constraint for critical data
     date_of_birth       date            not null,
     membership_type_id  int             not null references membership_types(membership_type_id)
-                                            on delete restrict,
-    joined_date         date            not null check (joined_date > date '2026-01-01'),  -- CHECK: date after 2026
+                                            on delete restrict,                   -- RESTRICT: protect parent records from accidental loss
+    joined_date         date            not null check (joined_date > date '2026-01-01'), -- CHECK: contract date verification
     record_ts           date            not null default current_date
 );
 
@@ -50,23 +37,23 @@ create table if not exists instructors (
     instructor_id       serial          primary key,
     first_name          varchar(50)     not null,
     last_name           varchar(50)     not null,
-    specialization      varchar(50)     not null check (specialization in ('Yoga', 'Cardio', 'MMA', 'Gym', 'Pilates')),  -- CHECK: enum
-    hourly_rate         numeric(10,2)   not null check (hourly_rate >= 0),        -- CHECK: non-negative
+    specialization      varchar(50)     not null check (specialization in ('Yoga', 'Cardio', 'MMA', 'Gym', 'Pilates')), -- CHECK: enum filter
+    hourly_rate         numeric(10,2)   not null check (hourly_rate >= 0),        -- CHECK: non-negative salary rates
     record_ts           date            not null default current_date
 );
 
 create table if not exists classes (
     class_id            serial          primary key,
-    name                varchar(100)    not null unique,
+    name                varchar(100)    not null unique,                          -- UNIQUE natural key
     description         text,
-    category            varchar(50)     not null check (category in ('Yoga', 'Cardio', 'Strength', 'Combat', 'Wellness')),
+    category            varchar(50)     not null check (category in ('Yoga', 'Cardio', 'Strength', 'Combat', 'Wellness')), -- CHECK: enum filter
     record_ts           date            not null default current_date
 );
 
 create table if not exists facilities (
     facility_id         serial          primary key,
     name                varchar(50)     not null,
-    capacity            int             not null check (capacity >= 0),           -- CHECK: non-negative
+    capacity            int             not null check (capacity >= 0),           -- CHECK: physical capacity limits
     location_description varchar(100),
     record_ts           date            not null default current_date
 );
@@ -81,16 +68,16 @@ create table if not exists schedule (
                                             on delete restrict,
     session_date        date            not null check (session_date > date '2026-01-01'),
     duration_minutes    int             not null check (duration_minutes > 0),
-    duration_hours      numeric(5,2)    generated always as (duration_minutes / 60.0) stored,  -- GENERATED column
+    duration_hours      numeric(5,2)    generated always as (duration_minutes / 60.0) stored, -- GENERATED: computed virtual column
     record_ts           date            not null default current_date
 );
 
 create table if not exists schedule_enrollment (
     member_id           int             not null references members(member_id)
-                                            on delete cascade,
+                                            on delete cascade,                    -- CASCADE: auto-purge enrollment links on member departure
     schedule_id         int             not null references schedule(schedule_id)
-                                            on delete cascade,
-    primary key (member_id, schedule_id),
+                                            on delete cascade,                    -- CASCADE: auto-purge records if a session is cancelled
+    primary key (member_id, schedule_id),                                         -- Composite primary key prevents duplicates
     enrolled_at         timestamp       not null default current_timestamp,
     record_ts           date            not null default current_date
 );
@@ -99,40 +86,52 @@ create table if not exists payments (
     payment_id          serial          primary key,
     amount              numeric(10,2)   not null check (amount >= 0),
     payment_date        timestamp       not null default current_timestamp,
-    payment_method      varchar(30)     not null check (payment_method in ('Cash', 'Card', 'Transfer')),
+    payment_method      varchar(30)     not null check (payment_method in ('Cash', 'Card', 'Transfer')), -- CHECK: enum filter
     member_id           int             not null references members(member_id)
                                             on delete restrict,
     note                text,
     record_ts           date            not null default current_date,
-    check (payment_date > '2026-01-01 00:00:00')                                 -- CHECK: date after 2026
+    check (payment_date > '2026-01-01 00:00:00')                                 -- CHECK: billing date boundary check
 );
 
 
 -- =============================================================
---  PART 3: ALTER TABLE (5 meaningful operations)
+--  PART 3: ALTER TABLE (Idempotent structural evolution)
 -- =============================================================
 
--- add a contact emergency phone column that was overlooked during initial design
-alter table members add column emergency_contact varchar(20) default 'N/A';
+-- 1. Add emergency contact column only if missing (prevents script failure on consecutive re-runs)
+alter table members add column if not exists emergency_contact varchar(20) default 'N/A';
 
--- widen the phone column: international numbers with country codes can exceed 15 chars
+-- 2. Widen the phone data field to accurately fit international country codes
 alter table members alter column phone type varchar(25);
 
--- add a rating column to instructors to track performance scores over time
-alter table instructors add column rating numeric(3,1) default 5.0;
+-- 3. Add quality evaluation rating column to instructors only if it does not exist yet
+alter table instructors add column if not exists rating numeric(3,1) default 5.0;
 
--- a session's max_participants was not modelled initially; add it with a sensible default
-alter table schedule add column max_participants int not null default 20;
+-- 4. Add safety participant capacity limit constraint to schedule slots if missing
+alter table schedule add column if not exists max_participants int not null default 20;
 
--- rename note to payment_note in payments for better clarity across the codebase
-alter table payments rename column note to payment_note;
+-- 5. Safe column rename logic: uses a dynamic anonymous block (DO) to look up information_schema.
+-- This ensures the script won't crash when 'note' has already been changed to 'payment_note'.
+do $$
+begin
+    if exists (
+        select 1 from information_schema.columns
+        where table_schema = 'fitness_club_db'
+          and table_name   = 'payments'
+          and column_name  = 'note'
+    ) then
+        alter table payments rename column note to payment_note;
+    end if;
+end;
+$$;
 
--- drop the emergency_contact default so future nulls surface missing data explicitly
+-- 6. Strip default constraint so application code is forced to handle explicit parameters
 alter table members alter column emergency_contact drop default;
 
 
 -- =============================================================
---  PART 4: INSERT — TRUNCATE (correct FK order)
+--  PART 4: INSERT — TRUNCATE (Strict foreign key execution dependency)
 -- =============================================================
 
 truncate table
@@ -144,11 +143,11 @@ truncate table
     fitness_club_db.instructors,
     fitness_club_db.members,
     fitness_club_db.membership_types
-restart identity cascade;
+restart identity cascade;                         -- RESTART IDENTITY resets sequences; CASCADE bypasses parent table locks
 
 
 -- =============================================================
---  PART 4: INSERT — MEMBERSHIP TYPES (5 rows, multi-row)
+--  PART 4: INSERT — MEMBERSHIP TYPES (5 rows, multi-row layout)
 -- =============================================================
 
 insert into membership_types (name, duration_months, price, access_level, is_active)
@@ -161,7 +160,7 @@ values
 
 
 -- =============================================================
---  PART 4: INSERT — MEMBERS (10 rows, subquery FKs)
+--  PART 4: INSERT — MEMBERS (10 rows, relational subquery lookups)
 -- =============================================================
 
 insert into members (first_name, last_name, email, phone, date_of_birth, membership_type_id, joined_date)
@@ -204,11 +203,11 @@ values
 
 insert into instructors (first_name, last_name, specialization, hourly_rate)
 values
-    ('Mike',    'Johnson',  'Yoga',    25.00),
-    ('John',    'Pork',     'MMA',     30.00),
-    ('Sara',    'Lee',      'Cardio',  28.00),
-    ('Arman',   'Dzhaksybekov', 'Gym', 22.00),
-    ('Natalia', 'Serova',   'Pilates', 26.00);
+    ('Mike',    'Johnson',      'Yoga',    25.00),
+    ('John',    'Pork',         'MMA',     30.00),
+    ('Sara',    'Lee',          'Cardio',  28.00),
+    ('Arman',   'Dzhaksybekov', 'Gym',     22.00),
+    ('Natalia', 'Serova',       'Pilates', 26.00);
 
 
 -- =============================================================
@@ -238,79 +237,78 @@ values
 
 
 -- =============================================================
---  PART 4: INSERT — SCHEDULE (10 rows, subquery FKs)
+--  PART 4: INSERT — SCHEDULE (10 rows, nested foreign key assignments)
 -- =============================================================
 
 insert into schedule (class_id, instructor_id, facility_id, session_date, duration_minutes, max_participants)
 values
     (
-        (select class_id      from classes     where name            = 'Morning Yoga'),
-        (select instructor_id from instructors where last_name       = 'Johnson'),
-        (select facility_id   from facilities  where name            = 'Yoga Studio'),
+        (select class_id      from classes     where name      = 'Morning Yoga'),
+        (select instructor_id from instructors where last_name = 'Johnson'),
+        (select facility_id   from facilities  where name      = 'Yoga Studio'),
         '2026-05-01', 60, 20
     ),
     (
-        (select class_id      from classes     where name            = 'HIIT Training'),
-        (select instructor_id from instructors where last_name       = 'Lee'),
-        (select facility_id   from facilities  where name            = 'Room A'),
+        (select class_id      from classes     where name      = 'HIIT Training'),
+        (select instructor_id from instructors where last_name = 'Lee'),
+        (select facility_id   from facilities  where name      = 'Room A'),
         '2026-05-02', 45, 25
     ),
     (
-        (select class_id      from classes     where name            = 'MMA Basics'),
-        (select instructor_id from instructors where last_name       = 'Pork'),
-        (select facility_id   from facilities  where name            = 'Combat Room'),
+        (select class_id      from classes     where name      = 'MMA Basics'),
+        (select instructor_id from instructors where last_name = 'Pork'),
+        (select facility_id   from facilities  where name      = 'Combat Room'),
         '2026-05-03', 90, 15
     ),
     (
-        (select class_id      from classes     where name            = 'Strength Circuit'),
-        (select instructor_id from instructors where last_name       = 'Dzhaksybekov'),
-        (select facility_id   from facilities  where name            = 'Gym Hall'),
+        (select class_id      from classes     where name      = 'Strength Circuit'),
+        (select instructor_id from instructors where last_name = 'Dzhaksybekov'),
+        (select facility_id   from facilities  where name      = 'Gym Hall'),
         '2026-05-04', 60, 30
     ),
     (
-        (select class_id      from classes     where name            = 'Evening Pilates'),
-        (select instructor_id from instructors where last_name       = 'Serova'),
-        (select facility_id   from facilities  where name            = 'Pilates Loft'),
+        (select class_id      from classes     where name      = 'Evening Pilates'),
+        (select instructor_id from instructors where last_name = 'Serova'),
+        (select facility_id   from facilities  where name      = 'Pilates Loft'),
         '2026-05-05', 50, 15
     ),
     (
-        (select class_id      from classes     where name            = 'Morning Yoga'),
-        (select instructor_id from instructors where last_name       = 'Johnson'),
-        (select facility_id   from facilities  where name            = 'Yoga Studio'),
+        (select class_id      from classes     where name      = 'Morning Yoga'),
+        (select instructor_id from instructors where last_name = 'Johnson'),
+        (select facility_id   from facilities  where name      = 'Yoga Studio'),
         '2026-05-08', 60, 20
     ),
     (
-        (select class_id      from classes     where name            = 'HIIT Training'),
-        (select instructor_id from instructors where last_name       = 'Lee'),
-        (select facility_id   from facilities  where name            = 'Room A'),
+        (select class_id      from classes     where name      = 'HIIT Training'),
+        (select instructor_id from instructors where last_name = 'Lee'),
+        (select facility_id   from facilities  where name      = 'Room A'),
         '2026-05-09', 45, 25
     ),
     (
-        (select class_id      from classes     where name            = 'MMA Basics'),
-        (select instructor_id from instructors where last_name       = 'Pork'),
-        (select facility_id   from facilities  where name            = 'Combat Room'),
+        (select class_id      from classes     where name      = 'MMA Basics'),
+        (select instructor_id from instructors where last_name = 'Pork'),
+        (select facility_id   from facilities  where name      = 'Combat Room'),
         '2026-05-10', 90, 15
     ),
     (
-        (select class_id      from classes     where name            = 'Strength Circuit'),
-        (select instructor_id from instructors where last_name       = 'Dzhaksybekov'),
-        (select facility_id   from facilities  where name            = 'Gym Hall'),
+        (select class_id      from classes     where name      = 'Strength Circuit'),
+        (select instructor_id from instructors where last_name = 'Dzhaksybekov'),
+        (select facility_id   from facilities  where name      = 'Gym Hall'),
         '2026-05-11', 60, 30
     ),
     (
-        (select class_id      from classes     where name            = 'Evening Pilates'),
-        (select instructor_id from instructors where last_name       = 'Serova'),
-        (select facility_id   from facilities  where name            = 'Pilates Loft'),
+        (select class_id      from classes     where name      = 'Evening Pilates'),
+        (select instructor_id from instructors where last_name = 'Serova'),
+        (select facility_id   from facilities  where name      = 'Pilates Loft'),
         '2026-05-12', 50, 15
     );
 
 
 -- =============================================================
---  PART 4: INSERT — SCHEDULE_ENROLLMENT
---  Using INSERT … SELECT to populate the junction table (required)
---  Enroll all VIP/Gold members into every Yoga session
+--  PART 4: INSERT — SCHEDULE_ENROLLMENT (Junction table populations)
 -- =============================================================
 
+-- Populate junction table utilizing an INSERT ... SELECT statement
 insert into schedule_enrollment (member_id, schedule_id)
 select
     m.member_id,
@@ -318,9 +316,9 @@ select
 from members m
 join membership_types mt on mt.membership_type_id = m.membership_type_id
 join schedule s          on s.class_id = (select class_id from classes where name = 'Morning Yoga')
-where mt.access_level = 'VIP';
+where mt.access_level = 'VIP';                     -- Automatically map all VIP profiles to morning yoga courses
 
--- individual enrollments (subquery FKs)
+-- Dedicated individual registrations using granular lookup filters
 insert into schedule_enrollment (member_id, schedule_id)
 values
     (
@@ -351,48 +349,48 @@ values
 
 
 -- =============================================================
---  PART 4: INSERT — PAYMENTS (10 rows, subquery FKs)
+--  PART 4: INSERT — PAYMENTS (10 rows, relational mappings)
 -- =============================================================
 
 insert into payments (amount, payment_method, member_id, payment_date, payment_note)
 values
-    (599.99, 'Card',
+    (599.99,  'Card',
         (select member_id from members where email = 'john.smith@email.kz'),
         '2026-02-01 10:00:00', 'Gold membership — annual'),
-    (299.99, 'Cash',
+    (299.99,  'Cash',
         (select member_id from members where email = 'dias.ermekov@email.kz'),
         '2026-02-15 11:30:00', 'Silver membership — 6 months'),
-    (299.99, 'Transfer',
+    (299.99,  'Transfer',
         (select member_id from members where email = 'anna.brown@email.kz'),
         '2026-03-01 09:00:00', 'Silver membership — 6 months'),
     (1099.99, 'Card',
         (select member_id from members where email = 'maria.ivanova@email.kz'),
         '2026-01-10 14:00:00', 'Platinum membership — 2 years'),
-    (149.99, 'Cash',
+    (149.99,  'Cash',
         (select member_id from members where email = 'alexei.petrov@email.kz'),
         '2026-03-15 16:00:00', 'Bronze membership — 3 months'),
-    (599.99, 'Card',
+    (599.99,  'Card',
         (select member_id from members where email = 'sara.nurova@email.kz'),
         '2026-02-20 12:00:00', 'Gold membership — annual'),
-    (49.99, 'Card',
+    (49.99,   'Card',
         (select member_id from members where email = 'timur.bekove@email.kz'),
         '2026-04-01 10:45:00', 'Trial membership — 1 month'),
-    (299.99, 'Transfer',
+    (299.99,  'Transfer',
         (select member_id from members where email = 'elena.volkova@email.kz'),
         '2026-03-10 08:30:00', 'Silver membership — 6 months'),
-    (149.99, 'Cash',
+    (149.99,  'Cash',
         (select member_id from members where email = 'bau.seitkali@email.kz'),
         '2026-04-05 17:15:00', 'Bronze membership — 3 months'),
-    (599.99, 'Card',
+    (599.99,  'Card',
         (select member_id from members where email = 'dinara.akhmet@email.kz'),
         '2026-01-20 11:00:00', 'Gold membership — annual');
 
 
 -- =============================================================
---  PART 5: UPDATE
+--  PART 5: UPDATE (Relational business rule execution)
 -- =============================================================
 
--- apply a 10 % loyalty discount to all Gold membership payments made via Card
+-- Apply a 10% loyalty discount to all Card payments linked to Gold packages
 update payments
 set    amount = amount * 0.90
 where  payment_method = 'Card'
@@ -403,8 +401,7 @@ where  payment_method = 'Card'
         where  mt.name = 'Gold'
   );
 
--- raise the hourly rate of every instructor whose class category is 'Combat' or 'Strength'
--- to reflect specialised demand; new rate = current rate + 5.00
+-- Raise rate by 5.00 for instructors handling specialized categories (Combat/Strength)
 update instructors i
 set    hourly_rate = hourly_rate + 5.00
 from   schedule   s
@@ -414,14 +411,13 @@ where  s.instructor_id = i.instructor_id
 
 
 -- =============================================================
---  PART 5: DELETE (wrapped in transaction — data is preserved)
+--  PART 5: DELETE (Wrapped in explicit testing transaction)
 -- =============================================================
 
--- remove trial memberships whose single-month period has lapsed (joined before May 2026)
--- payments must be deleted first to satisfy the FK constraint on payments.member_id
--- wrapped in BEGIN … ROLLBACK so data survives the defense session
+-- Explicit transaction blocks real execution to maintain data integrity during defense
 begin;
 
+-- Financial transaction records must be wiped first to prevent ON DELETE RESTRICT violations
 delete from payments
 where  member_id in (
     select member_id from members
@@ -429,31 +425,35 @@ where  member_id in (
       and  joined_date < '2026-05-01'
 );
 
+-- Delete expired trial account references
 delete from members
 where  membership_type_id = (select membership_type_id from membership_types where name = 'Trial')
   and  joined_date < '2026-05-01'
-returning member_id, first_name, last_name, joined_date;
+returning member_id, first_name, last_name, joined_date; -- RETURNING fetches structured output logs of dropped objects
 
-rollback;
+rollback;                                         -- ROLLBACK securely restores data to original state
 
 
 -- =============================================================
---  PART 6: GRANT / REVOKE
+--  PART 6: GRANT / REVOKE (Role-based access security controls)
 -- =============================================================
+
+-- Clear obsolete roles prior to configuration re-entry
+revoke all privileges on all tables in schema fitness_club_db from fitness_club_readonly;
+revoke all privileges on all tables in schema fitness_club_db from fitness_club_writer;
 
 drop role if exists fitness_club_readonly;
 drop role if exists fitness_club_writer;
 
--- read-only role: used by reporting tools and dashboards that only need SELECT access
+-- Instantiate explicit service access groups
 create role fitness_club_readonly;
-
--- writer role: used by front-desk staff who record new payments and member sign-ups
 create role fitness_club_writer;
 
+-- Assign analytical privileges to the reporting group
 grant select on all tables in schema fitness_club_db to fitness_club_readonly;
 
+-- Provide registration privileges to data entry desk personnel
 grant insert, update on fitness_club_db.payments to fitness_club_writer;
 
--- revoke UPDATE on payments from writer role: payments must never be altered after creation
--- to maintain an immutable financial audit log; corrections require a new offsetting record
+-- Enforce strict immutability rule: audit logs cannot be updated after creation
 revoke update on fitness_club_db.payments from fitness_club_writer;
