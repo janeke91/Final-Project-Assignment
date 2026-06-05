@@ -99,19 +99,19 @@ create table if not exists payments (
 --  PART 3: ALTER TABLE (Idempotent structural evolution)
 -- =============================================================
 
--- 1. Add emergency contact column only if missing (prevents script failure on consecutive re-runs)
+-- Add emergency contact column only if missing (prevents script failure on consecutive re-runs)
 alter table members add column if not exists emergency_contact varchar(20) default 'N/A';
 
--- 2. Widen the phone data field to accurately fit international country codes
+-- Widen the phone data field to accurately fit international country codes
 alter table members alter column phone type varchar(25);
 
--- 3. Add quality evaluation rating column to instructors only if it does not exist yet
+-- Add quality evaluation rating column to instructors only if it does not exist yet
 alter table instructors add column if not exists rating numeric(3,1) default 5.0;
 
--- 4. Add safety participant capacity limit constraint to schedule slots if missing
+--  Add safety participant capacity limit constraint to schedule slots if missing
 alter table schedule add column if not exists max_participants int not null default 20;
 
--- 5. Safe column rename logic: uses a dynamic anonymous block (DO) to look up information_schema.
+-- Safe column rename logic: uses a dynamic anonymous block (DO) to look up information_schema.
 -- This ensures the script won't crash when 'note' has already been changed to 'payment_note'.
 do $$
 begin
@@ -126,7 +126,7 @@ begin
 end;
 $$;
 
--- 6. Strip default constraint so application code is forced to handle explicit parameters
+-- Strip default constraint so application code is forced to handle explicit parameters
 alter table members alter column emergency_contact drop default;
 
 
